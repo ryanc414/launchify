@@ -1,4 +1,6 @@
+use handlebars::Handlebars;
 use regex::Regex;
+use serde_json::json;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -6,6 +8,27 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 use structopt::StructOpt;
+
+const PLIST_TEMPLATE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\"
+  \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+    <key>Label</key>
+    <string>{{name}}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{program_path}}</string>{{#each args}}
+        <string>{{this}}</string>{{/each}}
+    </array>
+    <key>StartInterval</key>
+    <integer>{{interval}}</integer>
+    <key>StandardOutPath</key>
+    <string>{{stdout}}</string>
+    <key>StandardErrorPath</key>
+    <string>{{stderr}}</string>
+</dict>
+</plist>";
 
 fn main() {
     let args = Cli::from_args();
@@ -23,7 +46,7 @@ fn main() {
 fn run(args: Cli) -> io::Result<()> {
     let path = fs::canonicalize(&args.program)?;
 
-    let cfg = match LaunchConfig::from_cli(args, path) {
+    let cfg = match LaunchConfig::from_cli(&args, path) {
         Some(c) => c,
         None => {
             return Err(io::Error::new(
@@ -42,6 +65,11 @@ fn run(args: Cli) -> io::Result<()> {
             ))
         }
     };
+
+    if args.dry_run {
+        println!("Dry run: would write {}", plist_file);
+        return Ok(());
+    }
 
     cfg.dirs.ensure()?;
     plist_file.write()?;
@@ -112,8 +140,11 @@ impl FromStr for Period {
 
 #[derive(StructOpt)]
 struct Cli {
-    program: String,
     period: Period,
+    program: String,
+    args: Vec<String>,
+    #[structopt(long)]
+    dry_run: bool,
 }
 
 struct LaunchConfig {
@@ -121,10 +152,11 @@ struct LaunchConfig {
     program_path: PathBuf,
     start_interval: u64,
     dirs: LaunchDirs,
+    args: Vec<String>,
 }
 
 impl LaunchConfig {
-    fn from_cli(args: Cli, path: PathBuf) -> Option<Self> {
+    fn from_cli(args: &Cli, path: PathBuf) -> Option<Self> {
         let name = path.file_stem()?.to_str()?.to_owned();
 
         let start_interval = args.period.to_seconds();
@@ -135,6 +167,7 @@ impl LaunchConfig {
             program_path: path,
             start_interval,
             dirs,
+            args: args.args.clone(),
         })
     }
 
@@ -143,28 +176,23 @@ impl LaunchConfig {
         let stdout_path = self.log_path("stdout")?;
         let stderr_path = self.log_path("stderr")?;
 
-        Some(format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\"
-  \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
-<plist version=\"1.0\">
-<dict>
-    <key>Label</key>
-    <string>{}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{}</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>{}</integer>
-    <key>StandardOutPath</key>
-    <string>{}</string>
-    <key>StandardErrorPath</key>
-    <string>{}</string>
-</dict>
-</plist>",
-            self.name, program_path, self.start_interval, stdout_path, stderr_path,
-        ))
+        let reg = Handlebars::new();
+        match reg.render_template(
+            PLIST_TEMPLATE,
+            &json!(
+                {
+                    "name": self.name,
+                    "program_path": program_path,
+                    "args": &self.args,
+                    "interval": self.start_interval,
+                    "stdout": stdout_path,
+                    "stderr": stderr_path,
+                }
+            ),
+        ) {
+            Ok(contents) => Some(contents),
+            Err(_) => None,
+        }
     }
 
     fn log_path(&self, filename: &str) -> Option<String> {
@@ -251,5 +279,16 @@ impl PlistFile {
                 "failed to load plist file",
             ))
         }
+    }
+}
+
+impl fmt::Display for PlistFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let filepath = match self.filepath.to_str() {
+            Some(path) => path,
+            None => return Err(fmt::Error),
+        };
+
+        write!(f, "{}:\n{}", filepath, self.contents)
     }
 }
