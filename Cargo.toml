@@ -3,6 +3,8 @@ name = "launchify"
 version = "0.1.0"
 authors = ["Ryan Collingham <ryan@tokencard.io>"]
 edition = "2018"
+description = "Easy launch agents for macOS"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
