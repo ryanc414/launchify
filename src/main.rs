@@ -148,7 +148,9 @@ struct Cli {
 
     #[structopt(long)]
     name: Option<String>,
-    args: Vec<String>,
+
+    #[structopt(long)]
+    args: Option<String>,
 }
 
 struct LaunchConfig {
@@ -169,12 +171,17 @@ impl LaunchConfig {
         let start_interval = args.period.to_seconds();
         let dirs = LaunchDirs::from(&name)?;
 
+        let program_args = match &args.args {
+            Some(a) => a.split_ascii_whitespace().map(|s| s.to_string()).collect(),
+            None => Vec::new(),
+        };
+
         Some(Self {
             name,
             program_path: path,
             start_interval,
             dirs,
-            args: args.args.clone(),
+            args: program_args,
         })
     }
 
