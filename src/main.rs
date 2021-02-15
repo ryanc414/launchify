@@ -142,9 +142,13 @@ impl FromStr for Period {
 struct Cli {
     period: Period,
     program: String,
-    args: Vec<String>,
+
     #[structopt(long)]
     dry_run: bool,
+
+    #[structopt(long)]
+    name: Option<String>,
+    args: Vec<String>,
 }
 
 struct LaunchConfig {
@@ -157,7 +161,10 @@ struct LaunchConfig {
 
 impl LaunchConfig {
     fn from_cli(args: &Cli, path: PathBuf) -> Option<Self> {
-        let name = path.file_stem()?.to_str()?.to_owned();
+        let name = match &args.name {
+            Some(name) => name.to_owned(),
+            None => path.file_stem()?.to_str()?.to_owned(),
+        };
 
         let start_interval = args.period.to_seconds();
         let dirs = LaunchDirs::from(&name)?;
