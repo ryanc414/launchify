@@ -40,3 +40,19 @@ You may override the default name used to label the launchify job and log
 directory via `--name`. By default the name is derived from the program filename.
 
 ```$ launchify 5m myprog --name=my_awesome_program```
+
+Comparison to launchctl
+-----------------------
+
+`launchify` is not intended to replace `launchctl` but is a convenience tool
+to complement it. `launchify` purposely does not support the full configuration
+options which may be passed to `launchctl` but optimizes for a common use-case.
+
+After scheduling a program using `launchify`, you will find the configuration
+file written to `~/Library/LaunchAgents/com.<name>.plist`. To stop running
+the program, run:
+
+```$ launchctl unload ~/Library/LaunchAgents/com.<name>.plist```
+
+For further information on launch agents and daemones on macOS, see
+https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html\
