@@ -32,14 +32,10 @@ const PLIST_TEMPLATE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 
 fn main() {
     let args = Cli::from_args();
-    println!("program: {}, period: {:?}", args.program, args.period);
 
-    match run(args) {
-        Ok(_) => println!("Completely successfully"),
-        Err(err) => {
-            println!("Error: {}", err);
-            std::process::exit(1);
-        }
+    if let Err(err) = run(args) {
+        println!("Error: {}", err);
+        std::process::exit(1);
     }
 }
 
