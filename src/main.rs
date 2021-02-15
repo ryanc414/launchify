@@ -3,6 +3,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::process::Command;
 use std::str::FromStr;
 use structopt::StructOpt;
 
@@ -20,10 +21,33 @@ fn main() {
 }
 
 fn run(args: Cli) -> io::Result<()> {
-    let cfg = LaunchConfig::from_cli(args)?;
-    cfg.ensure_log_dirs()?;
-    let plist = cfg.to_plist();
-    println!("got program plist:\n{}", plist);
+    let path = fs::canonicalize(&args.program)?;
+
+    let cfg = match LaunchConfig::from_cli(args, path) {
+        Some(c) => c,
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "could not generate launch config",
+            ))
+        }
+    };
+
+    let plist_file = match PlistFile::from(&cfg) {
+        Some(plist) => plist,
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "could not generate plist file",
+            ))
+        }
+    };
+
+    cfg.dirs.ensure()?;
+    plist_file.write()?;
+    plist_file.load()?;
+    println!("successfuly scheduled {}", cfg.name);
+
     Ok(())
 }
 
@@ -96,43 +120,30 @@ struct LaunchConfig {
     name: String,
     program_path: PathBuf,
     start_interval: u64,
-    log_dir: PathBuf,
+    dirs: LaunchDirs,
 }
 
 impl LaunchConfig {
-    fn from_cli(args: Cli) -> io::Result<Self> {
-        let path = fs::canonicalize(args.program)?;
-        let file_stem = match path.file_stem() {
-            Some(stem) => stem,
-            None => return Err(io::Error::new(io::ErrorKind::Other, "no file name")),
-        };
-        let file_stem = match file_stem.to_str() {
-            Some(stem) => stem.to_owned(),
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "could not convert filename to string",
-                ))
-            }
-        };
+    fn from_cli(args: Cli, path: PathBuf) -> Option<Self> {
+        let name = path.file_stem()?.to_str()?.to_owned();
 
         let start_interval = args.period.to_seconds();
-        let log_dir = get_log_dir(&file_stem)?;
+        let dirs = LaunchDirs::from(&name)?;
 
-        Ok(Self {
-            name: file_stem,
+        Some(Self {
+            name,
             program_path: path,
             start_interval,
-            log_dir,
+            dirs,
         })
     }
 
-    fn ensure_log_dirs(&self) -> io::Result<()> {
-        fs::create_dir_all(&self.log_dir)
-    }
+    fn plist_contents(&self) -> Option<String> {
+        let program_path = self.program_path.to_str()?;
+        let stdout_path = self.log_path("stdout")?;
+        let stderr_path = self.log_path("stderr")?;
 
-    fn to_plist(&self) -> String {
-        format!(
+        Some(format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\"
   \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -152,39 +163,93 @@ impl LaunchConfig {
     <string>{}</string>
 </dict>
 </plist>",
-            self.name,
-            self.program_path.to_str().unwrap(),
-            self.start_interval,
-            self.stdout_path().to_str().unwrap(),
-            self.stderr_path().to_str().unwrap(),
-        )
+            self.name, program_path, self.start_interval, stdout_path, stderr_path,
+        ))
     }
 
-    fn stdout_path(&self) -> PathBuf {
-        let mut path = self.log_dir.to_owned();
-        path.push("stdout");
-        path
+    fn log_path(&self, filename: &str) -> Option<String> {
+        let mut path = self.dirs.log_dir.to_owned();
+        path.push(filename);
+        match path.to_str() {
+            Some(p) => Some(p.to_owned()),
+            None => None,
+        }
     }
 
-    fn stderr_path(&self) -> PathBuf {
-        let mut path = self.log_dir.to_owned();
-        path.push("stderr");
-        path
+    fn plist_filepath(&self) -> Option<PathBuf> {
+        let filename = format!("com.{}.plist", self.name);
+        let mut filepath = dirs::home_dir()?;
+
+        filepath.push("Library");
+        filepath.push("LaunchAgents");
+        filepath.push(filename);
+        Some(filepath)
     }
 }
 
-fn get_log_dir(name: &str) -> io::Result<PathBuf> {
-    let mut log_dir = match dirs::home_dir() {
-        Some(home) => home,
-        None => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "could not find user home directory",
-            ));
-        }
-    };
-    log_dir.push("logs");
-    log_dir.push(name);
+struct LaunchDirs {
+    log_dir: PathBuf,
+    plist_dir: PathBuf,
+}
 
-    Ok(log_dir)
+impl LaunchDirs {
+    fn from(name: &str) -> Option<Self> {
+        let mut log_dir = dirs::home_dir()?;
+        let mut plist_dir = log_dir.clone();
+
+        log_dir.push("logs");
+        log_dir.push(name);
+
+        plist_dir.push("Library");
+        plist_dir.push("LaunchAgents");
+
+        Some(Self { log_dir, plist_dir })
+    }
+
+    fn ensure(&self) -> io::Result<()> {
+        fs::create_dir_all(&self.log_dir)?;
+        fs::create_dir_all(&self.plist_dir)?;
+        Ok(())
+    }
+}
+
+struct PlistFile {
+    filepath: PathBuf,
+    contents: String,
+}
+
+impl PlistFile {
+    fn from(cfg: &LaunchConfig) -> Option<Self> {
+        let filepath = cfg.plist_filepath()?;
+        let contents = cfg.plist_contents()?;
+        Some(Self { filepath, contents })
+    }
+
+    fn write(&self) -> io::Result<()> {
+        fs::write(&self.filepath, &self.contents)
+    }
+
+    fn load(&self) -> io::Result<()> {
+        let filepath = match self.filepath.to_str() {
+            Some(path) => path,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "could not convert filepath to str",
+                ))
+            }
+        };
+        let status = Command::new("launchctl")
+            .args(&["load", "-w", filepath])
+            .status()?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "failed to load plist file",
+            ))
+        }
+    }
 }
