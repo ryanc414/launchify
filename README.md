@@ -1,5 +1,5 @@
 Launchify
----------
+=========
 
 Launchify is a tool that makes it super easy to schedule programs to run on
 a regular schedule on macOS. As an example, to schedule a program `myprog` to
@@ -23,7 +23,7 @@ Then install using `cargo`:
 ```$ cargo install launchify```
 
 Advanced Usage
-==============
+--------------
 
 To see full CLI options, run `launchify -h`.
 
@@ -55,4 +55,4 @@ the program, run:
 ```$ launchctl unload ~/Library/LaunchAgents/com.<name>.plist```
 
 For further information on launch agents and daemones on macOS, see
-https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html\
+https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html
