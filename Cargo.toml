@@ -1,6 +1,6 @@
 [package]
 name = "launchify"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ryan Collingham <ryan@tokencard.io>"]
 edition = "2018"
 description = "Easy launch agents for macOS"
