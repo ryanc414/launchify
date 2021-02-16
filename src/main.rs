@@ -1,6 +1,7 @@
 use handlebars::Handlebars;
 use regex::Regex;
 use serde_json::json;
+use std::env;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -27,6 +28,8 @@ const PLIST_TEMPLATE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
     <string>{{stdout}}</string>
     <key>StandardErrorPath</key>
     <string>{{stderr}}</string>
+    <key>WorkingDirectory</key>
+    <string>{{working_dir}}</string>
 </dict>
 </plist>";
 
@@ -147,6 +150,9 @@ struct Cli {
 
     #[structopt(long)]
     args: Option<String>,
+
+    #[structopt(long)]
+    working_dir: Option<String>,
 }
 
 struct LaunchConfig {
@@ -155,6 +161,7 @@ struct LaunchConfig {
     start_interval: u64,
     dirs: LaunchDirs,
     args: Vec<String>,
+    working_dir: String,
 }
 
 impl LaunchConfig {
@@ -172,12 +179,21 @@ impl LaunchConfig {
             None => Vec::new(),
         };
 
+        let working_dir = match &args.working_dir {
+            Some(dir) => dir.to_owned(),
+            None => match env::current_dir() {
+                Ok(dir) => dir.to_str()?.to_owned(),
+                Err(_) => return None,
+            },
+        };
+
         Some(Self {
             name,
             program_path: path,
             start_interval,
             dirs,
             args: program_args,
+            working_dir,
         })
     }
 
@@ -193,10 +209,11 @@ impl LaunchConfig {
                 {
                     "name": self.name,
                     "program_path": program_path,
-                    "args": &self.args,
+                    "args": self.args,
                     "interval": self.start_interval,
                     "stdout": stdout_path,
                     "stderr": stderr_path,
+                    "working_dir": self.working_dir,
                 }
             ),
         ) {
