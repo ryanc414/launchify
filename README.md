@@ -1,9 +1,9 @@
 Launchify
 =========
 
-Launchify is a tool that makes it super easy to schedule programs to run on
-a regular schedule on macOS. As an example, to schedule a program `myprog` to
-run ever 5 minutes:
+Launchify is a tool that makes it super easy to schedule programs to run as
+regular background tasks on macOS. As an example, to schedule a program `myprog`
+to run ever 5 minutes:
 
 ```$ launchify 5m myprog```
 
@@ -32,6 +32,9 @@ or (s)econds. For example, to run `myprog` once an hour:
 
 ```$ launchify 1h myprog```
 
+Note that `myprog` may be either the absolute or relative path to an executable,
+or the name of an executable on your PATH.
+
 Extra program args may be specified via the `--args` option
 
 ```$ launchify 5m myprog --args="--foo bar"```
@@ -40,6 +43,12 @@ You may override the default name used to label the launchify job and log
 directory via `--name`. By default the name is derived from the program filename.
 
 ```$ launchify 5m myprog --name=my_awesome_program```
+
+By default, the task will be configured to run in the same working directory
+that you run `launchify` inside, however this may be overridden via the
+`--working-dir` option:
+
+```$ launchify 5m myprog --working-dir=/path/to/dir```
 
 Comparison to launchctl
 -----------------------

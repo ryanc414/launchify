@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 use structopt::StructOpt;
+use which::which;
 
 const PLIST_TEMPLATE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\"
@@ -43,9 +44,7 @@ fn main() {
 }
 
 fn run(args: Cli) -> io::Result<()> {
-    let path = fs::canonicalize(&args.program)?;
-
-    let cfg = match LaunchConfig::from_cli(&args, path) {
+    let cfg = match LaunchConfig::from_cli(&args) {
         Some(c) => c,
         None => {
             return Err(io::Error::new(
@@ -165,7 +164,18 @@ struct LaunchConfig {
 }
 
 impl LaunchConfig {
-    fn from_cli(args: &Cli, path: PathBuf) -> Option<Self> {
+    fn from_cli(args: &Cli) -> Option<Self> {
+        // First, try and treat the program as a filepath and see if we can
+        // get the absolute path. Otherwise, we use the which crate to see
+        // if the program matches an executable on the current PATH.
+        let path = match fs::canonicalize(&args.program) {
+            Ok(path) => path,
+            Err(_) => match which(&args.program) {
+                Ok(path) => path,
+                Err(_) => return None,
+            },
+        };
+
         let name = match &args.name {
             Some(name) => name.to_owned(),
             None => path.file_stem()?.to_str()?.to_owned(),
