@@ -44,9 +44,22 @@ fn main() {
     }
 }
 
-type Res<T> = Result<T, Box<dyn std::error::Error>>;
+#[derive(Debug, Error)]
+enum RunError {
+    #[error("IO error: {source}")]
+    Io {
+        #[from]
+        source: io::Error,
+    },
 
-fn run(args: Cli) -> Res<()> {
+    #[error("error generating config: {source}")]
+    Cfg {
+        #[from]
+        source: LaunchConfigErr,
+    },
+}
+
+fn run(args: Cli) -> Result<(), RunError> {
     let cfg = LaunchConfig::from_cli(&args)?;
     let plist_file = PlistFile::from(&cfg)?;
 
@@ -147,6 +160,18 @@ enum LaunchConfigErr {
 
     #[error("could not find home directory")]
     NoHomeDir,
+
+    #[error("could not find program")]
+    InvalidProg,
+
+    #[error("could not get current working dir")]
+    CurrentDir,
+
+    #[error("could not render config template")]
+    RenderTemplate {
+        #[from]
+        source: handlebars::TemplateRenderError,
+    },
 }
 
 struct LaunchConfig {
@@ -159,13 +184,13 @@ struct LaunchConfig {
 }
 
 impl LaunchConfig {
-    fn from_cli(args: &Cli) -> Res<Self> {
+    fn from_cli(args: &Cli) -> Result<Self, LaunchConfigErr> {
         // First, try and treat the program as a filepath and see if we can
         // get the absolute path. Otherwise, we use the which crate to see
         // if the program matches an executable on the current PATH.
         let path = match fs::canonicalize(&args.program) {
             Ok(path) => path,
-            Err(_) => which(&args.program)?,
+            Err(_) => which(&args.program).map_err(|_| LaunchConfigErr::InvalidProg)?,
         };
 
         let name = match &args.name {
@@ -188,7 +213,8 @@ impl LaunchConfig {
 
         let working_dir = match &args.working_dir {
             Some(dir) => dir.to_owned(),
-            None => env::current_dir()?
+            None => env::current_dir()
+                .map_err(|_| LaunchConfigErr::CurrentDir)?
                 .to_str()
                 .ok_or(LaunchConfigErr::InvalidFilepath)?
                 .to_owned(),
@@ -204,7 +230,7 @@ impl LaunchConfig {
         })
     }
 
-    fn plist_contents(&self) -> Res<String> {
+    fn plist_contents(&self) -> Result<String, LaunchConfigErr> {
         let program_path = self
             .program_path
             .to_str()
@@ -230,16 +256,15 @@ impl LaunchConfig {
         .map_err(|e| e.into())
     }
 
-    fn log_path(&self, filename: &str) -> Res<String> {
+    fn log_path(&self, filename: &str) -> Result<String, LaunchConfigErr> {
         let mut path = self.dirs.log_dir.to_owned();
         path.push(filename);
         path.to_str()
             .ok_or(LaunchConfigErr::InvalidFilepath)
             .map(|p| p.to_owned())
-            .map_err(|e| e.into())
     }
 
-    fn plist_filepath(&self) -> Res<PathBuf> {
+    fn plist_filepath(&self) -> Result<PathBuf, LaunchConfigErr> {
         let filename = format!("com.{}.plist", self.name);
         let mut filepath = dirs::home_dir().ok_or(LaunchConfigErr::NoHomeDir)?;
 
@@ -256,7 +281,7 @@ struct LaunchDirs {
 }
 
 impl LaunchDirs {
-    fn from(name: &str) -> Res<Self> {
+    fn from(name: &str) -> Result<Self, LaunchConfigErr> {
         let mut log_dir = dirs::home_dir().ok_or(LaunchConfigErr::NoHomeDir)?;
         let mut plist_dir = log_dir.clone();
 
@@ -282,7 +307,7 @@ struct PlistFile {
 }
 
 impl PlistFile {
-    fn from(cfg: &LaunchConfig) -> Res<Self> {
+    fn from(cfg: &LaunchConfig) -> Result<Self, LaunchConfigErr> {
         let filepath = cfg.plist_filepath()?;
         let contents = cfg.plist_contents()?;
         Ok(Self { filepath, contents })
