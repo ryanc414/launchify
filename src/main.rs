@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 use structopt::StructOpt;
+use thiserror::Error;
 use which::which;
 
 const PLIST_TEMPLATE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
@@ -43,26 +44,11 @@ fn main() {
     }
 }
 
-fn run(args: Cli) -> io::Result<()> {
-    let cfg = match LaunchConfig::from_cli(&args) {
-        Some(c) => c,
-        None => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "could not generate launch config",
-            ))
-        }
-    };
+type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
-    let plist_file = match PlistFile::from(&cfg) {
-        Some(plist) => plist,
-        None => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "could not generate plist file",
-            ))
-        }
-    };
+fn run(args: Cli) -> Res<()> {
+    let cfg = LaunchConfig::from_cli(&args)?;
+    let plist_file = PlistFile::from(&cfg)?;
 
     if args.dry_run {
         println!("Dry run: would write {}", plist_file);
@@ -108,7 +94,7 @@ impl fmt::Display for ParsePeriodError {
 impl FromStr for Period {
     type Err = ParsePeriodError;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let re = Regex::new(r"^(\d+)(d|h|m|s)$").unwrap();
         let caps = match re.captures(s) {
             Some(caps) => caps,
@@ -154,6 +140,15 @@ struct Cli {
     working_dir: Option<String>,
 }
 
+#[derive(Error, Debug)]
+enum LaunchConfigErr {
+    #[error("invalid filepath")]
+    InvalidFilepath,
+
+    #[error("could not find home directory")]
+    NoHomeDir,
+}
+
 struct LaunchConfig {
     name: String,
     program_path: PathBuf,
@@ -164,21 +159,23 @@ struct LaunchConfig {
 }
 
 impl LaunchConfig {
-    fn from_cli(args: &Cli) -> Option<Self> {
+    fn from_cli(args: &Cli) -> Res<Self> {
         // First, try and treat the program as a filepath and see if we can
         // get the absolute path. Otherwise, we use the which crate to see
         // if the program matches an executable on the current PATH.
         let path = match fs::canonicalize(&args.program) {
             Ok(path) => path,
-            Err(_) => match which(&args.program) {
-                Ok(path) => path,
-                Err(_) => return None,
-            },
+            Err(_) => which(&args.program)?,
         };
 
         let name = match &args.name {
             Some(name) => name.to_owned(),
-            None => path.file_stem()?.to_str()?.to_owned(),
+            None => path
+                .file_stem()
+                .ok_or(LaunchConfigErr::InvalidFilepath)?
+                .to_str()
+                .ok_or(LaunchConfigErr::InvalidFilepath)?
+                .to_owned(),
         };
 
         let start_interval = args.period.to_seconds();
@@ -191,13 +188,13 @@ impl LaunchConfig {
 
         let working_dir = match &args.working_dir {
             Some(dir) => dir.to_owned(),
-            None => match env::current_dir() {
-                Ok(dir) => dir.to_str()?.to_owned(),
-                Err(_) => return None,
-            },
+            None => env::current_dir()?
+                .to_str()
+                .ok_or(LaunchConfigErr::InvalidFilepath)?
+                .to_owned(),
         };
 
-        Some(Self {
+        Ok(Self {
             name,
             program_path: path,
             start_interval,
@@ -207,13 +204,16 @@ impl LaunchConfig {
         })
     }
 
-    fn plist_contents(&self) -> Option<String> {
-        let program_path = self.program_path.to_str()?;
+    fn plist_contents(&self) -> Res<String> {
+        let program_path = self
+            .program_path
+            .to_str()
+            .ok_or(LaunchConfigErr::InvalidFilepath)?;
         let stdout_path = self.log_path("stdout")?;
         let stderr_path = self.log_path("stderr")?;
 
         let reg = Handlebars::new();
-        match reg.render_template(
+        reg.render_template(
             PLIST_TEMPLATE,
             &json!(
                 {
@@ -226,29 +226,27 @@ impl LaunchConfig {
                     "working_dir": self.working_dir,
                 }
             ),
-        ) {
-            Ok(contents) => Some(contents),
-            Err(_) => None,
-        }
+        )
+        .map_err(|e| e.into())
     }
 
-    fn log_path(&self, filename: &str) -> Option<String> {
+    fn log_path(&self, filename: &str) -> Res<String> {
         let mut path = self.dirs.log_dir.to_owned();
         path.push(filename);
-        match path.to_str() {
-            Some(p) => Some(p.to_owned()),
-            None => None,
-        }
+        path.to_str()
+            .ok_or(LaunchConfigErr::InvalidFilepath)
+            .map(|p| p.to_owned())
+            .map_err(|e| e.into())
     }
 
-    fn plist_filepath(&self) -> Option<PathBuf> {
+    fn plist_filepath(&self) -> Res<PathBuf> {
         let filename = format!("com.{}.plist", self.name);
-        let mut filepath = dirs::home_dir()?;
+        let mut filepath = dirs::home_dir().ok_or(LaunchConfigErr::NoHomeDir)?;
 
         filepath.push("Library");
         filepath.push("LaunchAgents");
         filepath.push(filename);
-        Some(filepath)
+        Ok(filepath)
     }
 }
 
@@ -258,8 +256,8 @@ struct LaunchDirs {
 }
 
 impl LaunchDirs {
-    fn from(name: &str) -> Option<Self> {
-        let mut log_dir = dirs::home_dir()?;
+    fn from(name: &str) -> Res<Self> {
+        let mut log_dir = dirs::home_dir().ok_or(LaunchConfigErr::NoHomeDir)?;
         let mut plist_dir = log_dir.clone();
 
         log_dir.push("logs");
@@ -268,7 +266,7 @@ impl LaunchDirs {
         plist_dir.push("Library");
         plist_dir.push("LaunchAgents");
 
-        Some(Self { log_dir, plist_dir })
+        Ok(Self { log_dir, plist_dir })
     }
 
     fn ensure(&self) -> io::Result<()> {
@@ -284,10 +282,10 @@ struct PlistFile {
 }
 
 impl PlistFile {
-    fn from(cfg: &LaunchConfig) -> Option<Self> {
+    fn from(cfg: &LaunchConfig) -> Res<Self> {
         let filepath = cfg.plist_filepath()?;
         let contents = cfg.plist_contents()?;
-        Some(Self { filepath, contents })
+        Ok(Self { filepath, contents })
     }
 
     fn write(&self) -> io::Result<()> {
