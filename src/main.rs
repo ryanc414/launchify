@@ -46,17 +46,32 @@ fn main() {
 
 #[derive(Debug, Error)]
 enum RunError {
+    #[error("invalid filepath")]
+    InvalidFilepath,
+
+    #[error("could not find home directory")]
+    NoHomeDir,
+
+    #[error("could not find program")]
+    InvalidProg,
+
+    #[error("could not get current working dir")]
+    CurrentDir,
+
+    #[error("could not render config template: {source}")]
+    RenderTemplate {
+        #[from]
+        source: handlebars::TemplateRenderError,
+    },
+
     #[error("IO error: {source}")]
     Io {
         #[from]
         source: io::Error,
     },
 
-    #[error("error generating config: {source}")]
-    Cfg {
-        #[from]
-        source: LaunchConfigErr,
-    },
+    #[error("could not load config file")]
+    Load,
 }
 
 fn run(args: Cli) -> Result<(), RunError> {
@@ -96,11 +111,11 @@ impl Period {
 }
 
 #[derive(Debug, Clone)]
-struct ParsePeriodError;
+struct ParsePeriodError(String);
 
 impl fmt::Display for ParsePeriodError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Error parsing period")
+        write!(f, "Error parsing period {}", self.0)
     }
 }
 
@@ -111,16 +126,16 @@ impl FromStr for Period {
         let re = Regex::new(r"^(\d+)(d|h|m|s)$").unwrap();
         let caps = match re.captures(s) {
             Some(caps) => caps,
-            None => return Err(ParsePeriodError),
+            None => return Err(ParsePeriodError(s.to_owned())),
         };
 
         if caps.len() != 3 {
-            return Err(ParsePeriodError);
+            return Err(ParsePeriodError(s.to_owned()));
         }
 
         let value: u64 = match caps[1].parse() {
             Ok(val) => val,
-            Err(_) => return Err(ParsePeriodError),
+            Err(_) => return Err(ParsePeriodError(s.to_owned())),
         };
 
         let period = match &caps[2] {
@@ -128,7 +143,7 @@ impl FromStr for Period {
             "h" => Period::Hour,
             "m" => Period::Minute,
             "s" => Period::Second,
-            _ => return Err(ParsePeriodError),
+            _ => return Err(ParsePeriodError(s.to_owned())),
         };
 
         Ok(period(value))
@@ -153,27 +168,6 @@ struct Cli {
     working_dir: Option<String>,
 }
 
-#[derive(Error, Debug)]
-enum LaunchConfigErr {
-    #[error("invalid filepath")]
-    InvalidFilepath,
-
-    #[error("could not find home directory")]
-    NoHomeDir,
-
-    #[error("could not find program")]
-    InvalidProg,
-
-    #[error("could not get current working dir")]
-    CurrentDir,
-
-    #[error("could not render config template")]
-    RenderTemplate {
-        #[from]
-        source: handlebars::TemplateRenderError,
-    },
-}
-
 struct LaunchConfig {
     name: String,
     program_path: PathBuf,
@@ -184,22 +178,22 @@ struct LaunchConfig {
 }
 
 impl LaunchConfig {
-    fn from_cli(args: &Cli) -> Result<Self, LaunchConfigErr> {
+    fn from_cli(args: &Cli) -> Result<Self, RunError> {
         // First, try and treat the program as a filepath and see if we can
         // get the absolute path. Otherwise, we use the which crate to see
         // if the program matches an executable on the current PATH.
         let path = match fs::canonicalize(&args.program) {
             Ok(path) => path,
-            Err(_) => which(&args.program).map_err(|_| LaunchConfigErr::InvalidProg)?,
+            Err(_) => which(&args.program).map_err(|_| RunError::InvalidProg)?,
         };
 
         let name = match &args.name {
             Some(name) => name.to_owned(),
             None => path
                 .file_stem()
-                .ok_or(LaunchConfigErr::InvalidFilepath)?
+                .ok_or(RunError::InvalidFilepath)?
                 .to_str()
-                .ok_or(LaunchConfigErr::InvalidFilepath)?
+                .ok_or(RunError::InvalidFilepath)?
                 .to_owned(),
         };
 
@@ -214,9 +208,9 @@ impl LaunchConfig {
         let working_dir = match &args.working_dir {
             Some(dir) => dir.to_owned(),
             None => env::current_dir()
-                .map_err(|_| LaunchConfigErr::CurrentDir)?
+                .map_err(|_| RunError::CurrentDir)?
                 .to_str()
-                .ok_or(LaunchConfigErr::InvalidFilepath)?
+                .ok_or(RunError::InvalidFilepath)?
                 .to_owned(),
         };
 
@@ -230,11 +224,11 @@ impl LaunchConfig {
         })
     }
 
-    fn plist_contents(&self) -> Result<String, LaunchConfigErr> {
+    fn plist_contents(&self) -> Result<String, RunError> {
         let program_path = self
             .program_path
             .to_str()
-            .ok_or(LaunchConfigErr::InvalidFilepath)?;
+            .ok_or(RunError::InvalidFilepath)?;
         let stdout_path = self.log_path("stdout")?;
         let stderr_path = self.log_path("stderr")?;
 
@@ -256,17 +250,17 @@ impl LaunchConfig {
         .map_err(|e| e.into())
     }
 
-    fn log_path(&self, filename: &str) -> Result<String, LaunchConfigErr> {
+    fn log_path(&self, filename: &str) -> Result<String, RunError> {
         let mut path = self.dirs.log_dir.to_owned();
         path.push(filename);
         path.to_str()
-            .ok_or(LaunchConfigErr::InvalidFilepath)
+            .ok_or(RunError::InvalidFilepath)
             .map(|p| p.to_owned())
     }
 
-    fn plist_filepath(&self) -> Result<PathBuf, LaunchConfigErr> {
+    fn plist_filepath(&self) -> Result<PathBuf, RunError> {
         let filename = format!("com.{}.plist", self.name);
-        let mut filepath = dirs::home_dir().ok_or(LaunchConfigErr::NoHomeDir)?;
+        let mut filepath = dirs::home_dir().ok_or(RunError::NoHomeDir)?;
 
         filepath.push("Library");
         filepath.push("LaunchAgents");
@@ -281,8 +275,8 @@ struct LaunchDirs {
 }
 
 impl LaunchDirs {
-    fn from(name: &str) -> Result<Self, LaunchConfigErr> {
-        let mut log_dir = dirs::home_dir().ok_or(LaunchConfigErr::NoHomeDir)?;
+    fn from(name: &str) -> Result<Self, RunError> {
+        let mut log_dir = dirs::home_dir().ok_or(RunError::NoHomeDir)?;
         let mut plist_dir = log_dir.clone();
 
         log_dir.push("logs");
@@ -307,7 +301,7 @@ struct PlistFile {
 }
 
 impl PlistFile {
-    fn from(cfg: &LaunchConfig) -> Result<Self, LaunchConfigErr> {
+    fn from(cfg: &LaunchConfig) -> Result<Self, RunError> {
         let filepath = cfg.plist_filepath()?;
         let contents = cfg.plist_contents()?;
         Ok(Self { filepath, contents })
@@ -317,16 +311,8 @@ impl PlistFile {
         fs::write(&self.filepath, &self.contents)
     }
 
-    fn load(&self) -> io::Result<()> {
-        let filepath = match self.filepath.to_str() {
-            Some(path) => path,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "could not convert filepath to str",
-                ))
-            }
-        };
+    fn load(&self) -> Result<(), RunError> {
+        let filepath = self.filepath.to_str().ok_or(RunError::InvalidFilepath)?;
         let status = Command::new("launchctl")
             .args(&["load", "-w", filepath])
             .status()?;
@@ -334,10 +320,7 @@ impl PlistFile {
         if status.success() {
             Ok(())
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "failed to load plist file",
-            ))
+            Err(RunError::Load)
         }
     }
 }
