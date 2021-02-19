@@ -91,7 +91,7 @@ fn run(args: Cli) -> Result<(), RunError> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum Period {
     Day(u64),
     Hour(u64),
@@ -110,7 +110,7 @@ impl Period {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct ParsePeriodError(String);
 
 impl fmt::Display for ParsePeriodError {
@@ -333,5 +333,80 @@ impl fmt::Display for PlistFile {
         };
 
         write!(f, "{}:\n{}", filepath, self.contents)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_period() -> Result<(), ParsePeriodError> {
+        let period = Period::from_str("15s")?;
+        assert_eq!(period, Period::Second(15));
+        let secs = period.to_seconds();
+        assert_eq!(secs, 15);
+
+        let period = Period::from_str("30m")?;
+        assert_eq!(period, Period::Minute(30));
+        let secs = period.to_seconds();
+        assert_eq!(secs, 30 * 60);
+
+        let period = Period::from_str("3h")?;
+        assert_eq!(period, Period::Hour(3));
+        let secs = period.to_seconds();
+        assert_eq!(secs, 3 * 60 * 60);
+
+        let period = Period::from_str("2d")?;
+        assert_eq!(period, Period::Day(2));
+        let secs = period.to_seconds();
+        assert_eq!(secs, 2 * 24 * 60 * 60);
+
+        let period = Period::from_str("123xyz");
+        assert_eq!(period, Err(ParsePeriodError(String::from("123xyz"))));
+
+        Ok(())
+    }
+
+    const EXPECTED_CONTENTS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\"
+  \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+    <key>Label</key>
+    <string>lister</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/ls</string>
+        <string>-l</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/ryan/logs/lister/stdout</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ryan/logs/lister/stderr</string>
+    <key>WorkingDirectory</key>
+    <string>/var/tmp</string>
+</dict>
+</plist>";
+
+    #[test]
+    fn test_dry_run() -> Result<(), RunError> {
+        let period = Period::Minute(30);
+
+        let args = Cli {
+            period,
+            program: String::from("ls"),
+            dry_run: true,
+            name: Some(String::from("lister")),
+            args: Some(String::from("-l")),
+            working_dir: Some(String::from("/var/tmp")),
+        };
+        let cfg = LaunchConfig::from_cli(&args)?;
+        let plist_file = PlistFile::from(&cfg)?;
+        assert_eq!(plist_file.contents, EXPECTED_CONTENTS);
+
+        Ok(())
     }
 }
